@@ -16,7 +16,8 @@ const GRASS_VERTEX_LOGIC = `
 
   // --- WIND SYSTEM (Multi-Layered AAA Approach) ---
   // Use accumulated wind time for variable speed phases
-  float time = uWindTime * 0.5;
+  // Slower time scale for reduced jitter
+  float time = uWindTime * 0.3;
   
   // Layer 1: Macro Wind (Broad sweeping waves) - Red Channel
   // Low frequency, high amplitude. Simulates large air masses moving.
@@ -29,20 +30,17 @@ const GRASS_VERTEX_LOGIC = `
   float gustWind = texture2D(uWindNoise, gustUV).g;
   
   // Layer 3: Micro Flutter (Procedural Detail)
-  // High frequency, low amplitude. Simulates blade vibration.
-  // Scale frequency by strength so it vibrates faster when windy
-  float flutterFreq = 12.0 + (uWindStrength * 5.0);
-  float flutter = sin(time * flutterFreq + worldPos.x * 2.0 + worldPos.z) * 
-                  cos(time * (flutterFreq * 1.5) + worldPos.z * 1.5);
+  // Low frequency, low amplitude to prevent aliasing/jitter.
+  // Scale frequency by strength so it vibrates faster when windy but stays smooth.
+  float flutterFreq = 2.0 + (uWindStrength * 2.5);
+  float flutter = sin(time * flutterFreq + worldPos.x + worldPos.z * 0.5);
                   
   // Composite Wind Strength (Normalized 0.0 to 1.0)
-  float windStrength = macroWind * 0.6 + gustWind * 0.4;
+  float localWindNoise = macroWind * 0.7 + gustWind * 0.3;
+  float windStrength = localWindNoise * uWindStrength;
   
-  // Apply Global Intensity (Gusts vs Lulls)
-  windStrength *= uWindStrength;
-  
-  // Attenuate flutter when calm
-  float flutterAmp = 0.05 * clamp(uWindStrength, 0.2, 1.0);
+  // Attenuate flutter
+  float flutterAmp = 0.03 * clamp(uWindStrength, 0.0, 1.5);
   windStrength += flutter * flutterAmp;
 
   // --- INTERACTION SYSTEM (State-based + Restoration) ---
@@ -61,13 +59,15 @@ const GRASS_VERTEX_LOGIC = `
   
   // 3. Dynamic Wind Restoration
   // "Wind system continuously applies a restoration force... masked to zero where player is standing."
-  // We use the wind strength to temporarily lift the trail effect, creating a "struggle" visual.
+  // Use stable macro wind for restoration to prevent trails from flickering/jittering.
   
   // Mask: 0.0 if under player (cannot recover), 1.0 if free (can recover)
   float recoveryMask = 1.0 - playerPress;
   
   // Restoration force: Stronger wind lifts grass more.
-  float restorationForce = windStrength * 0.7 * recoveryMask;
+  // We use a smoother wind approximation here.
+  float stableWind = (macroWind * 0.8 + 0.2) * uWindStrength;
+  float restorationForce = clamp(stableWind * 0.5 * recoveryMask, 0.0, 0.8);
   
   // Apply restoration to trail:
   // If wind is strong, effective trail reduces (grass bounces up).
@@ -509,7 +509,7 @@ export class GrassSystem {
     const targetStrength = THREE.MathUtils.lerp(0.1, 1.8, normWind);
     
     // Smoothly transition current strength (inertia)
-    this.currentWindStrength += (targetStrength - this.currentWindStrength) * dt * 0.8;
+    this.currentWindStrength += (targetStrength - this.currentWindStrength) * dt * 0.2;
     
     // Accumulate wind time based on current speed
     // This makes the waves move faster when wind is stronger
