@@ -1,9 +1,7 @@
-import * as THREE from 'three';
-
-const GRASS_VERTEX_LOGIC = `
+export const GRASS_VERTEX_LOGIC = `
   vec3 transformed = vec3( position );
   vHeight = uv.y;
-
+  
   vec4 instancePosition = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
   vec3 worldPos = (modelMatrix * instancePosition).xyz;
   vWorldPosition = worldPos;
@@ -127,57 +125,3 @@ const GRASS_VERTEX_LOGIC = `
   #endif
 `;
 
-export function patchGrassMaterial(material, uniforms, isDepth = false) {
-  material.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, uniforms);
-    
-    shader.vertexShader = `
-      uniform float uTime;
-      uniform vec3 uPlayerPos;
-      uniform vec3 uPlayerVel;
-      uniform sampler2D uTrailMap;
-      uniform float uTerrainSize;
-      uniform sampler2D uWindNoise;
-      uniform float uWindTime;
-      uniform float uWindStrength;
-      varying float vHeight;
-      varying vec3 vWorldPosition;
-      ${shader.vertexShader}
-    `;
-
-    shader.vertexShader = shader.vertexShader.replace(
-      '#include <begin_vertex>',
-      GRASS_VERTEX_LOGIC
-    );
-
-    if (!isDepth) {
-        shader.fragmentShader = `
-          varying float vHeight;
-          varying vec3 vInstanceColor;
-        ` + shader.fragmentShader;
-        
-        shader.fragmentShader = shader.fragmentShader.replace(
-          '#include <color_fragment>',
-          `
-          vec3 bottomColor = vec3(0.01, 0.08, 0.01);
-          vec3 topColor = vec3(0.2, 0.5, 0.1);
-          
-          vec3 finalColor = mix(bottomColor, topColor, vHeight);
-          finalColor *= vInstanceColor;
-          finalColor *= smoothstep(-0.1, 0.3, vHeight); // AO
-          diffuseColor.rgb = finalColor;
-          `
-        );
-        
-        // Inject vInstanceColor support in vertex for main material
-        shader.vertexShader = shader.vertexShader.replace(
-           'varying vec3 vWorldPosition;',
-           'varying vec3 vWorldPosition; varying vec3 vInstanceColor;'
-        );
-        shader.vertexShader = shader.vertexShader.replace(
-           'vHeight = uv.y;',
-           'vHeight = uv.y; vInstanceColor = instanceColor;'
-        );
-    }
-  };
-}
