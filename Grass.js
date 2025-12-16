@@ -15,7 +15,8 @@ const GRASS_VERTEX_LOGIC = `
   vWorldPosition = worldPos;
 
   // --- WIND SYSTEM (Multi-Layered AAA Approach) ---
-  float time = uTime * 0.5;
+  // Use accumulated wind time for variable speed phases
+  float time = uWindTime * 0.5;
   
   // Layer 1: Macro Wind (Broad sweeping waves) - Red Channel
   // Low frequency, high amplitude. Simulates large air masses moving.
@@ -29,12 +30,20 @@ const GRASS_VERTEX_LOGIC = `
   
   // Layer 3: Micro Flutter (Procedural Detail)
   // High frequency, low amplitude. Simulates blade vibration.
-  float flutter = sin(time * 12.0 + worldPos.x * 2.0 + worldPos.z) * 
-                  cos(time * 18.0 + worldPos.z * 1.5);
+  // Scale frequency by strength so it vibrates faster when windy
+  float flutterFreq = 12.0 + (uWindStrength * 5.0);
+  float flutter = sin(time * flutterFreq + worldPos.x * 2.0 + worldPos.z) * 
+                  cos(time * (flutterFreq * 1.5) + worldPos.z * 1.5);
                   
   // Composite Wind Strength (Normalized 0.0 to 1.0)
   float windStrength = macroWind * 0.6 + gustWind * 0.4;
-  windStrength += flutter * 0.05; // Add detail noise
+  
+  // Apply Global Intensity (Gusts vs Lulls)
+  windStrength *= uWindStrength;
+  
+  // Attenuate flutter when calm
+  float flutterAmp = 0.05 * clamp(uWindStrength, 0.2, 1.0);
+  windStrength += flutter * flutterAmp;
 
   // --- INTERACTION SYSTEM (State-based + Restoration) ---
   
@@ -82,7 +91,7 @@ const GRASS_VERTEX_LOGIC = `
   transformed.z += windDir.z * bendAmount;
   
   // Add flutter to tips
-  transformed.y += flutter * 0.05 * stiffness * vHeight;
+  transformed.y += flutter * flutterAmp * stiffness * vHeight;
   
   // --- REALISTIC CRUSH ROTATION ---
   
@@ -135,9 +144,14 @@ export class GrassSystem {
       uPlayerVel: { value: new THREE.Vector3(0, 0, 0) },
       uTrailMap: { value: null }, 
       uTerrainSize: { value: 200.0 },
-      uWindNoise: { value: windTex } // New Uniform
+      uWindNoise: { value: windTex },
+      uWindTime: { value: 0 },      // Accumulated time based on wind speed
+      uWindStrength: { value: 1.0 } // Current global wind multiplier
     };
     
+    this.windTime = 0;
+    this.currentWindStrength = 1.0;
+
     this.renderer = renderer;
     this.scene = scene;
     this.getTerrainHeight = getTerrainHeight;
@@ -318,6 +332,8 @@ export class GrassSystem {
         uniform sampler2D uTrailMap;
         uniform float uTerrainSize;
         uniform sampler2D uWindNoise;
+        uniform float uWindTime;
+        uniform float uWindStrength;
         varying float vHeight;
         varying vec3 vWorldPosition;
         ${shader.vertexShader}
@@ -477,6 +493,31 @@ export class GrassSystem {
   update(time, dt, playerPosition, camera, sunDirection, lodHigh = 128, lodLow = 256) {
     this.uniforms.uTime.value = time;
     
+    // --- Wind Dynamics ---
+    // Calculate global wind variance (Gusts and Lulls)
+    // Combine two sine waves for irregular "breathing" of the wind
+    const cycle1 = Math.sin(time * 0.1);         // Slow 60s cycle
+    const cycle2 = Math.sin(time * 0.4 + 2.0);   // Faster 15s cycle
+    
+    // Combined normalized -1 to 1
+    const rawWind = (cycle1 + cycle2 * 0.5) / 1.5; 
+    
+    // Map to strength multiplier:
+    // Calm (0.2) to Stormy (1.6)
+    // Use smoothstep to make the 'states' linger slightly
+    const normWind = THREE.MathUtils.smoothstep(rawWind, -0.8, 0.8);
+    const targetStrength = THREE.MathUtils.lerp(0.1, 1.8, normWind);
+    
+    // Smoothly transition current strength (inertia)
+    this.currentWindStrength += (targetStrength - this.currentWindStrength) * dt * 0.8;
+    
+    // Accumulate wind time based on current speed
+    // This makes the waves move faster when wind is stronger
+    this.windTime += dt * this.currentWindStrength;
+
+    this.uniforms.uWindTime.value = this.windTime;
+    this.uniforms.uWindStrength.value = this.currentWindStrength;
+
     if (playerPosition) {
       this.brush.position.set(playerPosition.x, 0, playerPosition.z);
 
