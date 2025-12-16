@@ -15,29 +15,29 @@ const GRASS_VERTEX_LOGIC = `
   vWorldPosition = worldPos;
 
   // --- WIND SYSTEM ---
-  // More dynamic wind direction
-  float windTime = uTime * 0.5;
-  vec3 windDir = normalize(vec3(1.0 + sin(windTime * 0.5) * 0.3, 0.0, 0.5 + cos(windTime * 0.3) * 0.3)); 
+  // Reduced time scale and frequency for less jitter
+  float windTime = uTime * 0.25; 
+  vec3 windDir = normalize(vec3(1.0 + sin(windTime * 0.3) * 0.2, 0.0, 0.5 + cos(windTime * 0.2) * 0.2)); 
   
   // Layer 1: Macro Gusts (Red Channel)
-  vec2 gustUV = worldPos.xz * 0.005 + windDir.xz * windTime * 0.2;
+  vec2 gustUV = worldPos.xz * 0.005 + windDir.xz * windTime * 0.15;
   float gustNoise = texture2D(uWindNoise, gustUV).r;
   
-  // Layer 2: Fast Turbulence (Green Channel)
-  vec2 turbUV = worldPos.xz * 0.02 + windDir.xz * windTime * 0.6;
+  // Layer 2: Turbulence (Green Channel) - Smoother motion
+  vec2 turbUV = worldPos.xz * 0.01 + windDir.xz * windTime * 0.3;
   float turbNoise = texture2D(uWindNoise, turbUV).g;
   
-  // Layer 3: Noise offset for variety
+  // Layer 3: Variance
   float noiseVar = texture2D(uWindNoise, worldPos.xz * 0.01).b;
 
-  // Composite Wind Intensity
-  float windIntensity = gustNoise * 0.6 + turbNoise * 0.3 + noiseVar * 0.1;
+  // Composite Wind Intensity - Smoothed mix
+  float windIntensity = gustNoise * 0.65 + turbNoise * 0.15 + noiseVar * 0.2;
   
-  // Dynamic Bursts (Procedural waves)
-  float burstPhase = dot(worldPos.xz, windDir.xz) * 0.15 - windTime * 2.0;
-  float burst = sin(burstPhase) + sin(burstPhase * 2.3); 
-  burst = smoothstep(0.0, 1.8, burst); // Only positive peaks
-  windIntensity += burst * 0.4;
+  // Dynamic Bursts (Procedural waves) - Softer transitions
+  float burstPhase = dot(worldPos.xz, windDir.xz) * 0.05 - windTime * 2.0;
+  float burst = sin(burstPhase) + sin(burstPhase * 1.6) * 0.6; 
+  burst = smoothstep(-0.5, 1.5, burst); 
+  windIntensity += burst * 0.35;
 
   // --- PLAYER INTERACTION ---
   vec2 mapUV = (worldPos.xz + (uTerrainSize * 0.5)) / uTerrainSize;
@@ -54,31 +54,31 @@ const GRASS_VERTEX_LOGIC = `
 
   // --- WIND & TRAIL INTERACTION ---
   // "Wind picks it self back up"
-  // If wind is strong, it lifts the trampled grass partially
-  float windLift = windIntensity * 0.5; 
+  // Strong wind temporarily negates the crushing effect, allowing grass to flow
+  float windLift = windIntensity * 0.85; 
   
-  // Effective crush factor
-  // We subtract windLift from the crush effect. 
-  // If wind is 1.0, it can reduce crush by 0.5.
-  float totalEffect = clamp(rawInteraction - windLift * rawInteraction, 0.0, 1.0);
+  // Effective crush: Wind opposes the crush smoothly
+  float effectiveCrush = rawInteraction * (1.0 - smoothstep(0.2, 0.9, windLift));
+  float totalEffect = clamp(effectiveCrush, 0.0, 1.0);
 
   // --- DISPLACEMENT ---
-  // Allow "slowly kinda blow" even when trampled
-  // Base flexibility is determined by height^2
-  // We modulate it by totalEffect, but keep a minimum (0.15) so it always moves a bit
-  float flexibility = pow(vHeight, 2.0) * ((1.0 - totalEffect) * 0.85 + 0.15);
+  // Restore flexibility if lifted by wind to ensure flow
+  float baseFlex = pow(vHeight, 2.0);
+  float stiffness = 1.0 - totalEffect;
   
-  float windStrength = 1.8; // Stronger base wind
+  // Allow flow even when partially crushed if wind is strong
+  float flexibility = baseFlex * (stiffness * 0.9 + 0.1 + (windLift * 0.2));
+  
+  float windStrength = 1.6; 
   vec3 windDisp = windDir * windIntensity * windStrength * flexibility;
   
-  // Add some vertical flutter
-  windDisp.y += sin(windTime * 5.0 + worldPos.x * 2.0) * 0.15 * flexibility;
+  // Vertical Flutter - Greatly reduced frequency to eliminate jitter
+  windDisp.y += sin(windTime * 3.0 + worldPos.x * 0.3 + worldPos.z * 0.3) * 0.1 * flexibility;
   
   // Interaction Displacement (Trample)
   vec2 pushDir = normalize(worldPos.xz - uPlayerPos.xz);
   if (length(worldPos.xz - uPlayerPos.xz) < 0.01) pushDir = vec2(1.0, 0.0);
   
-  // Chaotic direction for settled trails
   vec2 messyDir = vec2(sin(worldPos.x * 12.0), cos(worldPos.z * 12.0));
   vec2 finalInteractDir = mix(messyDir, pushDir, immediatePush);
   
@@ -86,7 +86,6 @@ const GRASS_VERTEX_LOGIC = `
   interactDisp *= totalEffect * 0.8 * vHeight; 
   
   // Flattening (Y-axis)
-  // WindLift reduces totalEffect, so this naturally lets grass rise up during gusts
   float crushDown = totalEffect * 0.7 * vHeight;
   
   // Combine
@@ -257,7 +256,7 @@ export class GrassSystem {
     const fadeMat = new THREE.MeshBasicMaterial({
       color: 0x000000,
       transparent: true,
-      opacity: 0.02, // Slightly faster recovery to complement the dynamic wind lift
+      opacity: 0.01, // Slower fade for permanent trails, wind handles temporary lift
       side: THREE.DoubleSide
     });
     this.fadeQuad = new THREE.Mesh(fadeGeo, fadeMat);
